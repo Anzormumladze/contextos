@@ -1,0 +1,68 @@
+import type { RiskConfig } from './schema.js';
+
+export const DEFAULT_CONFIG: RiskConfig = {
+  criticalPaths: [
+    'src/auth/**',
+    'src/payment/**',
+    'src/checkout/**',
+    'src/billing/**',
+    'src/navigation/**',
+    'src/storage/**',
+    'src/migrations/**',
+    '**/migrations/**',
+  ],
+  strictAreas: [
+    'src/api/**',
+    'src/hooks/**',
+    'src/state/**',
+    'src/store/**',
+    'src/services/**',
+  ],
+  ignoredPaths: [
+    'node_modules/**',
+    'dist/**',
+    'build/**',
+    'coverage/**',
+    '**/*.test.ts',
+    '**/*.test.tsx',
+    '**/*.spec.ts',
+    '**/*.spec.tsx',
+    '**/__tests__/**',
+    '**/__mocks__/**',
+    '**/*.d.ts',
+  ],
+  minimumCoverage: {
+    lines: 80,
+    branches: 70,
+    functions: 80,
+    changedLines: 85,
+  },
+  decisionThresholds: {
+    warn: 30,
+    block: 65,
+  },
+  weights: {
+    levels: { LOW: 1, MEDIUM: 4, HIGH: 10, CRITICAL: 25 },
+    categories: {
+      coverage: 1.0,
+      'edge-case': 1.1,
+      regression: 1.2,
+      async: 1.3,
+      state: 1.2,
+      'api-contract': 1.2,
+      security: 1.8,
+      'critical-path': 1.5,
+      custom: 1.0,
+    },
+    criticalPathMultiplier: 2.0,
+    strictAreaMultiplier: 1.5,
+    changeSizeFactor: 1.2,
+    coverageGapWeight: 0.6,
+  },
+  blockedCategories: [],
+  customRules: [],
+  diff: {
+    base: 'HEAD',
+    includeUntracked: true,
+  },
+};

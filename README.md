@@ -1,127 +1,213 @@
-# ContextOS
+# contextos-risk
 
-**Meta-MCP proxy — one server, zero schema bloat, full tool access.**
+**Local MCP server — test coverage + edge case + risk intelligence engine for Claude Code.**
 
-Instead of loading every tool schema upfront (often 50k–130k tokens), ContextOS exposes just 4 tools to Claude. Schemas load on demand, only when needed.
+This is not a coverage reader. It is a local **release safety engine** that
+Claude Code can call *before* proposing code edits, fixes, or commits.
 
-```
-Typical savings: 60–94% token reduction at session start
-```
+It ingests the current git diff + (optional) coverage report, runs a pipeline
+of rule-based engines (coverage, edge-case, regression, async, state, api
+contract, security, regression, custom), scores the result, and returns a
+normalized `PASS | WARN | BLOCK` decision with concrete missing-test
+suggestions.
 
-## How it works
-
-Claude sees only 4 tools:
-
-| Tool | What it does |
-|------|-------------|
-| `ctx_search(query)` | Find tools by natural language — returns IDs + short descriptions, no schemas |
-| `ctx_describe(tool_id)` | Load one tool's full schema on demand |
-| `ctx_exec(tool_id, args)` | Execute a tool via the proxy |
-| `ctx_status()` | Token budget dashboard |
-
-**Workflow:** `ctx_search` → `ctx_describe` → `ctx_exec`
-
-## Requirements
-
-- Node.js >= 20
-- An existing MCP config (`.mcp.json` or Claude Desktop config)
+---
 
 ## Install
 
 ```bash
-npm install -g contextos
-# or without install:
-npx contextos serve --config /path/to/mcp.json
+npm install
+npm run build
 ```
 
-## Setup
+Node ≥ 20.
 
-1. Scan your existing MCP servers:
+## Run as an MCP server (stdio)
+
 ```bash
-contextos scan --config ~/.claude.json
+node dist/cli.js serve
+# or
+npx contextos-risk serve
 ```
 
-2. Add ContextOS to your MCP config (replacing direct server entries):
+### Wire it into Claude Code
+
+Add to `~/.claude.json` (or your project `.mcp.json`):
+
 ```json
 {
   "mcpServers": {
-    "contextos": {
-      "command": "npx",
-      "args": ["contextos", "serve", "--config", "/path/to/original-mcp.json"]
+    "risk": {
+      "command": "node",
+      "args": ["/absolute/path/to/contextos-risk/dist/cli.js", "serve"]
     }
   }
 }
 ```
 
-3. Restart Claude Code — it now sees 4 tools instead of all schemas upfront.
+Then from a Claude Code session:
 
-## CLI Commands
+> *"Before you propose that fix, call `evaluate_release_safety` and show me the decision."*
 
-**`serve`** — Start the MCP server (stdio):
+## Run standalone from the CLI
+
 ```bash
-contextos serve --config /path/to/mcp.json
+# Full analysis as JSON (non-zero exit = WARN or BLOCK)
+node dist/cli.js analyze --pretty
+
+# Short human summary
+node dist/cli.js analyze --summary
+
+# One specific tool
+node dist/cli.js run detect_edge_cases
+node dist/cli.js run analyze_security_risk
+
+# List all tools
+node dist/cli.js tools
 ```
 
-**`scan`** — Index servers and show token breakdown:
-```bash
-contextos scan --config /path/to/mcp.json
+Exit codes: `0` PASS, `1` WARN, `2` BLOCK. Usable as a local pre-push gate.
+
+---
+
+## Tools exposed over MCP
+
+| Tool | Purpose |
+|---|---|
+| `evaluate_release_safety` | Meta-tool — runs the full pipeline and returns the final `AnalysisResult`. Call this first. |
+| `analyze_test_coverage` | Line/branch/function and **changed-line** coverage vs thresholds. |
+| `detect_edge_cases` | Rule-based detection of missing null/empty/boundary/auth/upload cases. |
+| `predict_regression_risk` | Size × criticality × coupling × bug-prone markers. |
+| `analyze_async_risk` | Unawaited promises, missing catch/finally, retries, timers, races. |
+| `analyze_state_risk` | Stale state, missing deps, optimistic rollback, unsafe persistence. |
+| `analyze_api_contract_risk` | Unsafe nesting, status checks, JSON.parse, pagination. |
+| `analyze_security_risk` | eval, secrets-in-log, plaintext tokens, shell/SQL injection, XSS. |
+| `suggest_missing_tests` | Prioritized, deduped missing-test scenarios across every engine. |
+| `generate_test_matrix` | Scenario × input × expected table per changed file. |
+
+All tools accept the same optional input: `cwd`, `base`, `diff`, `coverageReportPath`, `includeUntracked`.
+
+---
+
+## Output shape
+
+```ts
+type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+type Decision  = 'PASS' | 'WARN' | 'BLOCK';
+
+interface Finding {
+  file: string;
+  category: 'coverage' | 'edge-case' | 'regression' | 'async' | 'state'
+          | 'api-contract' | 'security' | 'critical-path' | 'custom';
+  level: RiskLevel;
+  title: string;
+  reason: string;
+  affectedLines?: number[];
+  evidence?: string[];
+  suggestedTests?: string[];
+  suggestedFix?: string;
+  ruleId?: string;
+}
+
+interface AnalysisResult {
+  decision: Decision;
+  overallRiskScore: number;       // 0..100
+  overallRiskLevel: RiskLevel;
+  summary: string;
+  findings: Finding[];
+  uncoveredScenarios: string[];
+  missingEdgeCases: string[];
+  recommendedNextSteps: string[];
+  meta: { analyzedAt: string; filesAnalyzed: number; durationMs: number; engineVersions: Record<string, string> };
+}
 ```
 
-**`search`** — Search tools from CLI:
-```bash
-contextos search "create github issue"
+Sample `analyze --summary` output:
+
+```
+[WARN] score=42.6 level=HIGH
+WARN (score 42.6/100, HIGH). 7 findings — CRITICAL:0, HIGH:3, MEDIUM:3, LOW:1. Changed-line coverage: 63% (19/30).
+
+Top findings:
+  [HIGH] src/auth/refresh.ts: Awaited network call without visible try/catch
+  [HIGH] src/checkout/cart.ts: Optimistic update without visible rollback
+  [HIGH] src/auth/refresh.ts: Critical-path file modified
+  [MEDIUM] src/api/orders.ts: fetch without status check
+  ...
+
+Missing edge cases:
+  - should handle expired access token refresh flow
+  - should handle 401 on a request during refresh in-flight
+  - should roll back optimistic update on mutation error
 ```
 
-**`compress`** — Compress a CLAUDE.md or context file:
-```bash
-contextos compress CLAUDE.md                    # preview, local mode
-contextos compress CLAUDE.md --mode ai          # Claude-powered (needs ANTHROPIC_API_KEY, incurs API cost)
-contextos compress CLAUDE.md --write            # apply + create .bak backup
+---
+
+## Scoring model
+
+```
+findingScore   = Σ levelWeight × categoryWeight × pathMultiplier
+coverageGap    = max(0, minChangedLinesCov − actualChangedLinesCov) × coverageGapWeight
+changeSize     = log₂(1 + LOC_changed) × changeSizeFactor
+total          = clamp(findingScore + coverageGap + changeSize, 0, 100)
+
+PASS  < warnThreshold (default 30)
+WARN  ≥ 30 and < blockThreshold (default 65)
+BLOCK ≥ 65  OR  any finding in blockedCategories
 ```
 
-> **Note:** `--mode ai` makes a paid Anthropic API call. Cost depends on file size. A typical 5k-token CLAUDE.md costs roughly $0.01–0.02.
+Defaults: `LOW=1, MEDIUM=4, HIGH=10, CRITICAL=25`. All weights, multipliers,
+and thresholds are overridable in `risk.config.json`.
 
-## Config Discovery
+## Config
 
-When `--config` is omitted, ContextOS checks in order:
-1. `.mcp.json` (cwd)
-2. `mcp.json` (cwd)
-3. `~/.claude.json`
-4. `~/.config/claude/claude_desktop_config.json`
-5. `~/Library/Application Support/Claude/claude_desktop_config.json`
+Drop a `risk.config.json` at the repo root (looked up via parent walk). See
+[`risk.config.example.json`](./risk.config.example.json) for the full shape.
+All fields are optional; defaults are sane and opinionated.
 
-If you pass `--config <path>` and the file is missing, invalid JSON, or defines no servers, ContextOS throws immediately rather than silently falling back.
+Supports:
 
-## Environment Variables
+- `criticalPaths` — globs that trigger the 2× risk multiplier
+- `strictAreas` — globs that trigger the 1.5× multiplier
+- `ignoredPaths` — globs the engines skip entirely
+- `minimumCoverage.{lines,branches,functions,changedLines}` — thresholds
+- `decisionThresholds.{warn,block}` — score → decision cutoffs
+- `weights.*` — per-level, per-category, path multipliers, change-size factor
+- `blockedCategories` — hard-block if any finding in these categories fires
+- `customRules[]` — repo-specific regex rules with full finding metadata
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `ANTHROPIC_API_KEY` | — | Required for `compress --mode ai` |
-| `CONTEXTOS_CONNECT_TIMEOUT` | `10000` | Child server connect timeout (ms) |
-| `CONTEXTOS_LIST_TOOLS_TIMEOUT` | `20000` | listTools() timeout (ms) |
-| `CONTEXTOS_CALL_TIMEOUT` | `30000` | callTool() timeout (ms) |
+---
 
-All timeout values must be positive integers between 1 and 300000.
+## Suggested Claude Code workflow
 
-## Limitations
+1. User asks Claude to fix a bug or add a feature.
+2. Before editing, Claude calls `evaluate_release_safety`.
+3. If `BLOCK`, Claude refuses and shows the reason.
+4. If `WARN`, Claude proceeds but lists the missing tests it will also add.
+5. After editing, Claude re-runs `evaluate_release_safety` against the new diff.
+6. Only when `PASS` (or `WARN` with mitigations listed) does Claude propose the commit.
 
-- Search is keyword-based (no embeddings). Works well for most queries; may miss synonyms in very large catalogs.
-- Token estimates use cl100k_base approximation (±10%).
-- Args passed to `ctx_exec` are not validated against tool schemas before proxying.
-- Retries only happen on transport/session failures (broken pipe, timeout, connection reset), not on tool-level errors.
+A recommended subagent prompt lives in [`CLAUDE.md`](./CLAUDE.md).
 
-## Troubleshooting
+---
 
-**"No tools indexed"** — Run `contextos scan` to see which servers failed. Check that child servers start correctly.
+## Extending
 
-**"All servers failed to index"** — ContextOS will pause retries for 15s before trying again. Fix the underlying server issue.
+- **Custom regex rules** — add to `customRules[]` in config; no rebuild needed.
+- **New engine** — drop a file in `src/engines/`, wire it into
+  `src/engines/pipeline.ts`, register a tool in `src/tools/index.ts`.
+- **Richer analysis (ts-morph / Babel AST)** — swap out the regex runner in
+  `src/engines/pattern-runner.ts`; the engine-/tool-/scoring-layer is unchanged.
 
-**"Config file not found"** — Use an absolute path with `--config`.
+## Known limitations (by design)
 
-**AI compression fails** — Set `ANTHROPIC_API_KEY` or use `--mode local`.
-
-**Tool call timeout** — Increase `CONTEXTOS_CALL_TIMEOUT`, e.g. `CONTEXTOS_CALL_TIMEOUT=60000 contextos serve`.
+- Regex heuristics, not full AST analysis. They trade precision for speed,
+  zero-config, and zero network dependencies.
+- Coverage parsing assumes Istanbul/LCOV output. Other formats need a parser
+  addition in `src/utils/coverage-parser.ts`.
+- Uses `git diff HEAD` (i.e. working-tree vs. index) by default. Pass `base`
+  to diff against `origin/main` or any ref.
 
 ## License
 
-MIT
+MIT.
