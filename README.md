@@ -1,153 +1,138 @@
 # contextos-risk
 
-**Local MCP server — test coverage + edge case + risk intelligence engine for Claude Code.**
+**Local MCP server — a release-safety engine for Claude Code.**
 
-This is not a coverage reader. It is a local **release safety engine** that
-Claude Code can call *before* proposing code edits, fixes, or commits.
-
-It ingests the current git diff + (optional) coverage report, runs a pipeline
-of rule-based engines (coverage, edge-case, regression, async, state, api
-contract, security, regression, custom), scores the result, and returns a
-normalized `PASS | WARN | BLOCK` decision with concrete missing-test
-suggestions.
+Before Claude edits a file, proposes a fix, or suggests a commit, it calls
+this server and gets back a `PASS | WARN | BLOCK` decision, a risk score, and
+a concrete list of missing tests. Pure-regex heuristics, zero network, <20 ms
+on a 5000-line diff.
 
 ---
 
-## Install
+## Quickstart — one command
 
 ```bash
-npm install
-npm run build
+npx contextos-risk init
 ```
 
-Node ≥ 20.
+That's it. The `init` command will, in the current repo:
 
-## Run as an MCP server (stdio)
+1. Create or update **`.mcp.json`** so Claude Code can find the server.
+2. Drop a default **`risk.config.json`** (critical paths, thresholds, blocked
+   categories) — only if one doesn't already exist.
+3. Append a **CLAUDE.md** stanza telling the agent to call
+   `evaluate_release_safety` before edits.
+
+Then restart Claude Code. Done.
+
+Prefer to preview first?
 
 ```bash
-node dist/cli.js serve
-# or
-npx contextos-risk serve
+npx contextos-risk init --dry-run
 ```
 
-### Wire it into Claude Code
+Want to use the published package instead of the local install?
 
-Add to `~/.claude.json` (or your project `.mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "risk": {
-      "command": "node",
-      "args": ["/absolute/path/to/contextos-risk/dist/cli.js", "serve"]
-    }
-  }
-}
+```bash
+npx contextos-risk init --no-local     # writes `"command":"npx", "args":["-y","contextos-risk","serve"]`
 ```
 
-Then from a Claude Code session:
+To remove later:
+
+```bash
+npx contextos-risk uninstall
+```
+
+## Is it healthy?
+
+```bash
+npx contextos-risk doctor
+```
+
+Checks Node version, that `.mcp.json` has the right entry, that
+`risk.config.json` parses with no warnings, that coverage is discoverable,
+and **boots the MCP server and does a real stdio handshake**.
+
+## Gate a commit locally
+
+```bash
+npx contextos-risk check             # human summary, exit 0/1/2
+npx contextos-risk check --markdown  # same content as Markdown
+npx contextos-risk check --json      # structured AnalysisResult
+```
+
+Wire it as a git pre-commit hook in one line:
+
+```bash
+echo 'npx contextos-risk check || exit $?' > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+```
+
+Sample `check` output:
+
+```
+✗ BLOCK — risk 78/100
+BLOCK (score 78/100, HIGH). 12 findings — CRITICAL:1, HIGH:4, MEDIUM:6, LOW:1. Changed-line coverage: 42% (13/31).
+────────────────────────────────────────────────────────────
+CRITICAL (1)
+  ✗ src/payment/charge.ts:18 — SQL via string concatenation / Sprintf
+     │  const q = `SELECT * FROM users WHERE id = ${id}`;
+     └─ fix: Use db.Query("... WHERE id = $1", id) instead of Sprintf.
+
+HIGH (4)
+  ✗ src/auth/refresh.ts:42 — catch clause removed
+  ✗ src/auth/refresh.ts:18 — Awaited network call without visible try/catch
+  ✗ src/cart/sync.ts:91 — Optimistic update without visible rollback
+  ✗ src/api/orders.ts:12 — fetch without status check
+
+Missing tests (top 8)
+  • should handle expired access token refresh flow
+  • should roll back optimistic update on mutation error
+  • should handle 401 / 403 / 429 / 500
+  • should handle declined card
+
+Next steps
+  1. Do not ship. Resolve CRITICAL/HIGH findings before retrying.
+  2. Raise changed-line coverage (currently 42%).
+  3. Fix: SQL via string concatenation in src/payment/charge.ts — use bind parameters.
+```
+
+---
+
+## What Claude Code actually calls
+
+From a session:
 
 > *"Before you propose that fix, call `evaluate_release_safety` and show me the decision."*
 
-## Run standalone from the CLI
+The tool response leads with a **Markdown summary** (so the agent and the user
+both read the same thing) and follows with the full structured
+`AnalysisResult` JSON for programmatic use.
 
-```bash
-# Full analysis as JSON (non-zero exit = WARN or BLOCK)
-node dist/cli.js analyze --pretty
-
-# Short human summary
-node dist/cli.js analyze --summary
-
-# One specific tool
-node dist/cli.js run detect_edge_cases
-node dist/cli.js run analyze_security_risk
-
-# List all tools
-node dist/cli.js tools
-```
-
-Exit codes: `0` PASS, `1` WARN, `2` BLOCK. Usable as a local pre-push gate.
-
----
-
-## Tools exposed over MCP
+### Tools exposed over MCP
 
 | Tool | Purpose |
 |---|---|
-| `evaluate_release_safety` | Meta-tool — runs the full pipeline and returns the final `AnalysisResult`. Call this first. |
-| `analyze_test_coverage` | Line/branch/function and **changed-line** coverage vs thresholds. |
-| `detect_edge_cases` | Rule-based detection of missing null/empty/boundary/auth/upload cases. |
-| `predict_regression_risk` | Size × criticality × coupling × bug-prone markers. |
-| `analyze_async_risk` | Unawaited promises, missing catch/finally, retries, timers, races. |
+| `evaluate_release_safety` | The one you want most of the time. Runs the full pipeline, returns PASS/WARN/BLOCK with a normalized result. |
+| `analyze_test_coverage` | Line / branch / function + **changed-line** coverage vs. thresholds. |
+| `detect_edge_cases` | Null, empty, boundary, auth, upload, retry-exhaustion, race, rollback. |
+| `predict_regression_risk` | Size × criticality × coupling × removed safeguards. |
+| `analyze_async_risk` | Unawaited promises, missing catch/finally, uncapped retries, timer leaks. |
 | `analyze_state_risk` | Stale state, missing deps, optimistic rollback, unsafe persistence. |
 | `analyze_api_contract_risk` | Unsafe nesting, status checks, JSON.parse, pagination. |
-| `analyze_security_risk` | eval, secrets-in-log, plaintext tokens, shell/SQL injection, XSS. |
-| `suggest_missing_tests` | Prioritized, deduped missing-test scenarios across every engine. |
+| `analyze_security_risk` | eval, secret logging, plaintext tokens, shell/SQL injection, XSS. |
+| `suggest_missing_tests` | Prioritized, deduped test scenarios across every engine. |
 | `generate_test_matrix` | Scenario × input × expected table per changed file. |
+| `explain_finding` | Drill-down: rule metadata + source excerpt for one finding. |
 
-All tools accept the same optional input: `cwd`, `base`, `diff`, `coverageReportPath`, `includeUntracked`.
-
----
-
-## Output shape
-
-```ts
-type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
-type Decision  = 'PASS' | 'WARN' | 'BLOCK';
-
-interface Finding {
-  file: string;
-  category: 'coverage' | 'edge-case' | 'regression' | 'async' | 'state'
-          | 'api-contract' | 'security' | 'critical-path' | 'custom';
-  level: RiskLevel;
-  title: string;
-  reason: string;
-  affectedLines?: number[];
-  evidence?: string[];
-  suggestedTests?: string[];
-  suggestedFix?: string;
-  ruleId?: string;
-}
-
-interface AnalysisResult {
-  decision: Decision;
-  overallRiskScore: number;       // 0..100
-  overallRiskLevel: RiskLevel;
-  summary: string;
-  findings: Finding[];
-  uncoveredScenarios: string[];
-  missingEdgeCases: string[];
-  recommendedNextSteps: string[];
-  meta: { analyzedAt: string; filesAnalyzed: number; durationMs: number; engineVersions: Record<string, string> };
-}
-```
-
-Sample `analyze --summary` output:
-
-```
-[WARN] score=42.6 level=HIGH
-WARN (score 42.6/100, HIGH). 7 findings — CRITICAL:0, HIGH:3, MEDIUM:3, LOW:1. Changed-line coverage: 63% (19/30).
-
-Top findings:
-  [HIGH] src/auth/refresh.ts: Awaited network call without visible try/catch
-  [HIGH] src/checkout/cart.ts: Optimistic update without visible rollback
-  [HIGH] src/auth/refresh.ts: Critical-path file modified
-  [MEDIUM] src/api/orders.ts: fetch without status check
-  ...
-
-Missing edge cases:
-  - should handle expired access token refresh flow
-  - should handle 401 on a request during refresh in-flight
-  - should roll back optimistic update on mutation error
-```
+All tools accept `cwd`, `base`, `diff`, `coverageReportPath`, `includeUntracked`, and `useCache`.
 
 ---
 
-## Scoring model
+## Scoring model (0 – 100)
 
 ```
 findingScore   = Σ levelWeight × categoryWeight × pathMultiplier
-coverageGap    = max(0, minChangedLinesCov − actualChangedLinesCov) × coverageGapWeight
+coverageGap    = max(0, threshold − changedLineCov) × coverageGapWeight
 changeSize     = log₂(1 + LOC_changed) × changeSizeFactor
 total          = clamp(findingScore + coverageGap + changeSize, 0, 100)
 
@@ -156,57 +141,41 @@ WARN  ≥ 30 and < blockThreshold (default 65)
 BLOCK ≥ 65  OR  any finding in blockedCategories
 ```
 
-Defaults: `LOW=1, MEDIUM=4, HIGH=10, CRITICAL=25`. All weights, multipliers,
-and thresholds are overridable in `risk.config.json`.
+Surfaced in `AnalysisResult.meta.scoringBreakdown` for auditability.
 
 ## Config
 
-Drop a `risk.config.json` at the repo root (looked up via parent walk). See
-[`risk.config.example.json`](./risk.config.example.json) for the full shape.
-All fields are optional; defaults are sane and opinionated.
+`risk.config.json` at the repo root. Every field optional; defaults are
+opinionated. Full example: [`risk.config.example.json`](./risk.config.example.json).
 
-Supports:
+Validator flags unknown keys, wrong types, invalid regex, and catastrophic
+backtracking shapes in custom rules — surfaced in
+`AnalysisResult.meta.configWarnings` (never throws).
 
-- `criticalPaths` — globs that trigger the 2× risk multiplier
-- `strictAreas` — globs that trigger the 1.5× multiplier
-- `ignoredPaths` — globs the engines skip entirely
-- `minimumCoverage.{lines,branches,functions,changedLines}` — thresholds
-- `decisionThresholds.{warn,block}` — score → decision cutoffs
-- `weights.*` — per-level, per-category, path multipliers, change-size factor
-- `blockedCategories` — hard-block if any finding in these categories fires
-- `customRules[]` — repo-specific regex rules with full finding metadata
+## Reliability defaults
 
----
+- Hostile-diff hardening: per-line + total byte caps in the parser.
+- Custom-regex execution is try/catch-guarded and bounded by a per-line
+  timeout (`limits.regexTimeoutMs`).
+- Windows-path safe via full `toPosix()` normalisation.
+- Coverage path suffix-match handles monorepo absolute paths.
+- In-memory LRU cache; repeated `evaluate_release_safety` for the same diff
+  + config returns from cache in µs (`meta.cacheHit = true`).
 
-## Suggested Claude Code workflow
+## Install without `init`
 
-1. User asks Claude to fix a bug or add a feature.
-2. Before editing, Claude calls `evaluate_release_safety`.
-3. If `BLOCK`, Claude refuses and shows the reason.
-4. If `WARN`, Claude proceeds but lists the missing tests it will also add.
-5. After editing, Claude re-runs `evaluate_release_safety` against the new diff.
-6. Only when `PASS` (or `WARN` with mitigations listed) does Claude propose the commit.
+Add manually to `~/.claude.json` or `./.mcp.json`:
 
-A recommended subagent prompt lives in [`CLAUDE.md`](./CLAUDE.md).
-
----
-
-## Extending
-
-- **Custom regex rules** — add to `customRules[]` in config; no rebuild needed.
-- **New engine** — drop a file in `src/engines/`, wire it into
-  `src/engines/pipeline.ts`, register a tool in `src/tools/index.ts`.
-- **Richer analysis (ts-morph / Babel AST)** — swap out the regex runner in
-  `src/engines/pattern-runner.ts`; the engine-/tool-/scoring-layer is unchanged.
-
-## Known limitations (by design)
-
-- Regex heuristics, not full AST analysis. They trade precision for speed,
-  zero-config, and zero network dependencies.
-- Coverage parsing assumes Istanbul/LCOV output. Other formats need a parser
-  addition in `src/utils/coverage-parser.ts`.
-- Uses `git diff HEAD` (i.e. working-tree vs. index) by default. Pass `base`
-  to diff against `origin/main` or any ref.
+```json
+{
+  "mcpServers": {
+    "risk": {
+      "command": "npx",
+      "args": ["-y", "contextos-risk", "serve"]
+    }
+  }
+}
+```
 
 ## License
 

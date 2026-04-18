@@ -5,6 +5,8 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { TOOLS, getTool } from '../tools/index.js';
+import { renderMarkdown } from '../cli/render.js';
+import type { AnalysisResult } from '../types/index.js';
 
 const SERVER_INFO = {
   name: 'contextos-risk',
@@ -41,9 +43,16 @@ export async function createRiskServer(): Promise<Server> {
     }
     try {
       const result = tool.handler((args ?? {}) as Parameters<typeof tool.handler>[0]);
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      };
+      const content: Array<{ type: 'text'; text: string }> = [
+        { type: 'text', text: JSON.stringify(result, null, 2) },
+      ];
+      // For tools that return a full AnalysisResult, follow up with a readable
+      // Markdown summary. Claude Code renders every content item, so the
+      // agent gets both machine- and human-grade output.
+      if (isAnalysisResult(result)) {
+        content.push({ type: 'text', text: renderMarkdown(result) });
+      }
+      return { content };
     } catch (err) {
       return {
         isError: true,
@@ -53,6 +62,16 @@ export async function createRiskServer(): Promise<Server> {
   });
 
   return server;
+}
+
+function isAnalysisResult(v: unknown): v is AnalysisResult {
+  if (!v || typeof v !== 'object') return false;
+  const o = v as Record<string, unknown>;
+  return typeof o.decision === 'string'
+    && typeof o.overallRiskScore === 'number'
+    && typeof o.summary === 'string'
+    && Array.isArray(o.findings)
+    && !!o.meta;
 }
 
 export async function runStdio(): Promise<void> {

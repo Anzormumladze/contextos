@@ -217,7 +217,7 @@ export const EDGE_CASE_RULES: PatternRule[] = [
     id: 'edge/division',
     category: 'edge-case', level: 'MEDIUM', languages: JS_LIKE,
     pattern: /[\w)\]]\s*\/\s*[a-zA-Z_]\w*/,
-    notPattern: /\/\/|\/\*|<\/|\/>/,
+    notPattern: /\/\/|\/\*|<\/|\/>|\bfrom\s+['"]|\brequire\s*\(\s*['"]|https?:\/\//,
     title: 'Division by variable — zero path not obviously guarded',
     reason: 'Division / modulo by a dynamic value can produce Infinity, NaN, or crash.',
     suggestedTests: ['should handle divisor = 0 without crashing'],
