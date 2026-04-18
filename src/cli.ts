@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { runStdio } from './server/index.js';
-import { buildContext } from './engines/context-builder.js';
+import { buildContextDetailed } from './engines/context-builder.js';
 import { runFullPipeline } from './engines/pipeline.js';
 import { TOOLS, getTool } from './tools/index.js';
 
@@ -27,8 +27,8 @@ program
   .option('--pretty', 'pretty-print JSON')
   .option('--summary', 'print a short human summary instead of JSON')
   .action((opts: { base: string; coverage?: string; cwd?: string; pretty?: boolean; summary?: boolean }) => {
-    const ctx = buildContext({ cwd: opts.cwd, base: opts.base, coverageReportPath: opts.coverage });
-    const result = runFullPipeline(ctx);
+    const { context, skippedFiles, configWarnings } = buildContextDetailed({ cwd: opts.cwd, base: opts.base, coverageReportPath: opts.coverage });
+    const result = runFullPipeline(context, { skippedFiles, configWarnings });
     if (opts.summary) {
       process.stdout.write(
         `[${result.decision}] score=${result.overallRiskScore} level=${result.overallRiskLevel}\n` +
@@ -63,7 +63,7 @@ program
       process.stderr.write(`Unknown tool: ${tool}\n`);
       process.exit(64);
     }
-    const result = def.handler({ cwd: opts.cwd, base: opts.base, coverageReportPath: opts.coverage });
+    const result = def.handler({ cwd: opts.cwd, base: opts.base, coverageReportPath: opts.coverage } as Parameters<typeof def.handler>[0]);
     process.stdout.write(JSON.stringify(result, null, 2) + '\n');
   });
 

@@ -1,4 +1,4 @@
-import type { AnalysisResult, Finding, RiskLevel } from '../types/index.js';
+import type { AnalysisResult, Finding, RiskLevel, SkippedFile } from '../types/index.js';
 import type { ScoringResult } from './scoring.js';
 import type { CoverageAnalysis } from './coverage.js';
 
@@ -34,10 +34,16 @@ export interface NormalizeInputs {
   score: ScoringResult;
   filesAnalyzed: number;
   durationMs: number;
+  totalFindingCap: number;
+  perRuleCap: number;
+  skippedFiles: SkippedFile[];
+  configWarnings: string[];
 }
 
 export function normalize(inputs: NormalizeInputs): AnalysisResult {
-  const findings = dedupe(inputs.findings).sort(sortFindings);
+  const deduped = dedupe(inputs.findings).sort(sortFindings);
+  const truncated = deduped.length > inputs.totalFindingCap;
+  const findings = truncated ? deduped.slice(0, inputs.totalFindingCap) : deduped;
 
   const uncoveredScenarios = Array.from(new Set([
     ...inputs.coverage.uncoveredScenarios,
@@ -46,9 +52,8 @@ export function normalize(inputs: NormalizeInputs): AnalysisResult {
 
   const missingEdgeCases = Array.from(new Set(inputs.missingEdgeCases)).slice(0, 50);
 
-  const recommendedNextSteps = buildRecommendations(findings, inputs);
-
-  const summary = buildSummary(findings, inputs);
+  const recommendedNextSteps = buildRecommendations(findings, inputs, truncated);
+  const summary = buildSummary(findings, inputs, deduped.length);
 
   return {
     decision: inputs.score.decision,
@@ -66,28 +71,50 @@ export function normalize(inputs: NormalizeInputs): AnalysisResult {
       engineVersions: {
         coverage: '1', 'edge-case': '1', regression: '1',
         async: '1', state: '1', 'api-contract': '1', security: '1',
-        scoring: '1',
+        removal: '1', scoring: '1',
       },
+      scoringBreakdown: inputs.score.breakdown,
+      truncated: {
+        findings: truncated,
+        perRuleCap: inputs.perRuleCap,
+        totalCap: inputs.totalFindingCap,
+        originalFindingCount: deduped.length,
+      },
+      skippedFiles: inputs.skippedFiles,
+      cacheHit: false,
+      configWarnings: inputs.configWarnings,
     },
   };
 }
 
-function buildSummary(findings: Finding[], inputs: NormalizeInputs): string {
+function buildSummary(findings: Finding[], inputs: NormalizeInputs, originalCount: number): string {
   const counts: Record<RiskLevel, number> = { LOW: 0, MEDIUM: 0, HIGH: 0, CRITICAL: 0 };
   for (const f of findings) counts[f.level] += 1;
   const cov = inputs.coverage.changedLineCoverage;
+  const covLabel = inputs.score.breakdown.coverageConsidered
+    ? `Changed-line coverage: ${cov.pct}% (${cov.covered}/${cov.total}).`
+    : 'Changed-line coverage: not evaluated (no coverage report).';
   const parts = [
     `${inputs.score.decision} (score ${inputs.score.overallRiskScore}/100, ${inputs.score.overallRiskLevel}).`,
-    `${findings.length} findings — CRITICAL:${counts.CRITICAL}, HIGH:${counts.HIGH}, MEDIUM:${counts.MEDIUM}, LOW:${counts.LOW}.`,
-    `Changed-line coverage: ${cov.pct}% (${cov.covered}/${cov.total}).`,
+    `${originalCount} findings — CRITICAL:${counts.CRITICAL}, HIGH:${counts.HIGH}, MEDIUM:${counts.MEDIUM}, LOW:${counts.LOW}.`,
+    covLabel,
   ];
   if (inputs.score.breakdown.blockedByCategory) {
     parts.push(`Hard-blocked by category: ${inputs.score.breakdown.blockedByCategory}.`);
   }
+  if (originalCount > findings.length) {
+    parts.push(`Showing top ${findings.length} (findings truncated).`);
+  }
+  if (inputs.skippedFiles.length > 0) {
+    parts.push(`${inputs.skippedFiles.length} file(s) skipped (binary/too-large/unreadable).`);
+  }
+  if (inputs.configWarnings.length > 0) {
+    parts.push(`${inputs.configWarnings.length} config warning(s).`);
+  }
   return parts.join(' ');
 }
 
-function buildRecommendations(findings: Finding[], inputs: NormalizeInputs): string[] {
+function buildRecommendations(findings: Finding[], inputs: NormalizeInputs, truncated: boolean): string[] {
   const rec: string[] = [];
   if (inputs.score.decision === 'BLOCK') {
     rec.push('Do not ship. Resolve CRITICAL/HIGH findings or hard-blocked category before retrying.');
@@ -96,12 +123,17 @@ function buildRecommendations(findings: Finding[], inputs: NormalizeInputs): str
   } else {
     rec.push('Low risk — safe to proceed. Consider the LOW-level suggestions for hygiene.');
   }
-  if (inputs.coverage.changedLineCoverage.pct < 85 && inputs.coverage.changedLineCoverage.total > 0) {
+  if (!inputs.score.breakdown.coverageConsidered) {
+    rec.push('No coverage report was found. Run your test suite with coverage enabled to tighten this gate.');
+  } else if (inputs.coverage.changedLineCoverage.pct < 85 && inputs.coverage.changedLineCoverage.total > 0) {
     rec.push(`Raise changed-line coverage (currently ${inputs.coverage.changedLineCoverage.pct}%).`);
   }
   const critical = findings.filter((f) => f.level === 'CRITICAL').slice(0, 5);
   for (const f of critical) {
     rec.push(`Fix: ${f.title} in ${f.file}${f.suggestedFix ? ` — ${f.suggestedFix}` : ''}`);
+  }
+  if (truncated) {
+    rec.push(`Finding list was truncated. Call analyze_* tools individually or raise config.limits.totalFindings to see the full set.`);
   }
   return rec;
 }

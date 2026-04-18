@@ -1,4 +1,6 @@
-import { buildContext, type BuildContextOptions } from '../engines/context-builder.js';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { buildContext, buildContextDetailed, type BuildContextOptions } from '../engines/context-builder.js';
 import { analyzeCoverage } from '../engines/coverage.js';
 import { analyzeEdgeCases } from '../engines/edge-case.js';
 import { analyzeAsyncRisk } from '../engines/async-risk.js';
@@ -6,21 +8,25 @@ import { analyzeStateRisk } from '../engines/state-risk.js';
 import { analyzeApiContractRisk } from '../engines/api-contract.js';
 import { analyzeSecurityRisk } from '../engines/security.js';
 import { analyzeRegressionRisk } from '../engines/regression.js';
+import { analyzeRemovalRisk } from '../engines/removal-risk.js';
 import { analyzeCustomRules } from '../engines/custom-rules.js';
 import { scoreAnalysis } from '../engines/scoring.js';
 import { normalize } from '../engines/normalizer.js';
 import { runFullPipeline } from '../engines/pipeline.js';
+import { ALL_PATTERN_RULES } from '../rules/patterns.js';
+import { PYTHON_RULES } from '../rules/patterns-python.js';
+import { GO_RULES } from '../rules/patterns-go.js';
 import type { Finding, AnalysisResult } from '../types/index.js';
 
 export interface ToolInput extends BuildContextOptions {
-  /** When true, re-runs on raw diff text supplied by caller (no git required). */
+  useCache?: boolean;
 }
 
 export interface ToolDefinition {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  handler: (input: ToolInput) => unknown;
+  handler: (input: ToolInput & Record<string, unknown>) => unknown;
 }
 
 const COMMON_INPUT_SCHEMA: Record<string, unknown> = {
@@ -31,7 +37,20 @@ const COMMON_INPUT_SCHEMA: Record<string, unknown> = {
     diff: { type: 'string', description: 'Raw unified-diff text to analyze instead of running git.' },
     coverageReportPath: { type: 'string', description: 'Explicit path to coverage-summary.json / coverage-final.json / lcov.info.' },
     includeUntracked: { type: 'boolean', description: 'Include untracked files as added-diff. Default true.' },
+    useCache: { type: 'boolean', description: 'Use the in-memory per-session analysis cache. Default true.' },
   },
+  additionalProperties: false,
+};
+
+const EXPLAIN_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    ...COMMON_INPUT_SCHEMA.properties as Record<string, unknown>,
+    file: { type: 'string', description: 'File path of the finding to explain.' },
+    ruleId: { type: 'string', description: 'The ruleId of the finding to explain (from AnalysisResult.findings[].ruleId).' },
+    contextLines: { type: 'number', description: 'Extra lines of surrounding source to return. Default 3.' },
+  },
+  required: ['file', 'ruleId'],
   additionalProperties: false,
 };
 
@@ -39,12 +58,17 @@ function intoResult(findings: Finding[], extra: Partial<AnalysisResult> = {}): P
   return { findings, ...extra };
 }
 
+const ALL_RULES = [...ALL_PATTERN_RULES, ...PYTHON_RULES, ...GO_RULES];
+
 export const TOOLS: ToolDefinition[] = [
   {
     name: 'evaluate_release_safety',
-    description: 'Run the full risk pipeline (coverage + edge-case + async + state + api + security + regression + custom) and return a final PASS/WARN/BLOCK decision with a normalized AnalysisResult. Call this before proposing code changes, fixes, or commits.',
+    description: 'Run the full risk pipeline (coverage + edge-case + async + state + api + security + regression + removal + custom) and return a final PASS/WARN/BLOCK decision with a normalized AnalysisResult. Call this before proposing code changes, fixes, or commits.',
     inputSchema: COMMON_INPUT_SCHEMA,
-    handler: (input) => runFullPipeline(buildContext(input)),
+    handler: (input) => {
+      const { context, skippedFiles, configWarnings } = buildContextDetailed(input);
+      return runFullPipeline(context, { skippedFiles, configWarnings, useCache: input.useCache });
+    },
   },
   {
     name: 'analyze_test_coverage',
@@ -67,19 +91,19 @@ export const TOOLS: ToolDefinition[] = [
     description: 'Rule-based and heuristic detection of missing edge cases: null, empty, boundary, malformed input, timeout, unauthorized, race, rollback, critical-path scenarios. Returns findings plus concrete missing test names.',
     inputSchema: COMMON_INPUT_SCHEMA,
     handler: (input) => {
-      const ctx = buildContext(input);
-      const edge = analyzeEdgeCases(ctx);
+      const edge = analyzeEdgeCases(buildContext(input));
       return { findings: edge.findings, missingEdgeCases: edge.missingEdgeCases };
     },
   },
   {
     name: 'predict_regression_risk',
-    description: 'Score regression risk from change size, criticality of changed files, coupling (imports), and bug-prone markers (TODO/FIXME/@ts-ignore).',
+    description: 'Score regression risk from change size, criticality of changed files, coupling (imports), bug-prone markers (TODO/FIXME/@ts-ignore), and removed safeguards (catch, status checks, auth gates).',
     inputSchema: COMMON_INPUT_SCHEMA,
     handler: (input) => {
       const ctx = buildContext(input);
       const reg = analyzeRegressionRisk(ctx);
-      return { findings: reg.findings, perFile: reg.perFile };
+      const rem = analyzeRemovalRisk(ctx);
+      return { findings: [...reg.findings, ...rem], perFile: reg.perFile };
     },
   },
   {
@@ -122,6 +146,7 @@ export const TOOLS: ToolDefinition[] = [
         ...analyzeApiContractRisk(ctx),
         ...analyzeSecurityRisk(ctx),
         ...analyzeRegressionRisk(ctx).findings,
+        ...analyzeRemovalRisk(ctx),
         ...analyzeCustomRules(ctx),
       ];
       const suggestions: Array<{ file: string; category: string; level: string; scenario: string; reason: string }> = [];
@@ -147,7 +172,8 @@ export const TOOLS: ToolDefinition[] = [
       const async_ = analyzeAsyncRisk(ctx);
       const api = analyzeApiContractRisk(ctx);
       const sec = analyzeSecurityRisk(ctx);
-      const findings = [...edge.findings, ...async_, ...api, ...sec];
+      const rem = analyzeRemovalRisk(ctx);
+      const findings = [...edge.findings, ...async_, ...api, ...sec, ...rem];
       const byFile: Record<string, Array<{ scenario: string; input: string; expected: string; category: string; level: string }>> = {};
       for (const f of findings) {
         for (const t of f.suggestedTests ?? []) {
@@ -162,6 +188,48 @@ export const TOOLS: ToolDefinition[] = [
         }
       }
       return { matrix: byFile };
+    },
+  },
+  {
+    name: 'explain_finding',
+    description: 'Return the full rule metadata, source excerpt (±contextLines around affected lines), and suggested remediation for a single finding. Use after `evaluate_release_safety` to drill into a specific risk.',
+    inputSchema: EXPLAIN_SCHEMA,
+    handler: (input) => {
+      const file = String(input.file ?? '');
+      const ruleId = String(input.ruleId ?? '');
+      const contextLines = typeof input.contextLines === 'number' ? input.contextLines : 3;
+      const ctx = buildContext(input);
+      const full = runFullPipeline(ctx, { useCache: input.useCache });
+      const finding = full.findings.find((f) => f.file === file && f.ruleId === ruleId);
+      const rule = ALL_RULES.find((r) => r.id === ruleId);
+      if (!finding && !rule) {
+        return { found: false, message: `No finding or rule matched file=${file} ruleId=${ruleId}` };
+      }
+      // Best-effort excerpt from the live file.
+      let excerpt: Array<{ lineNo: number; text: string }> = [];
+      const abs = resolve(ctx.projectRoot, file);
+      if (existsSync(abs)) {
+        try {
+          const lines = readFileSync(abs, 'utf8').split('\n');
+          const affected = new Set(finding?.affectedLines ?? []);
+          const windows = new Set<number>();
+          for (const l of affected) {
+            for (let d = -contextLines; d <= contextLines; d += 1) {
+              const n = l + d;
+              if (n >= 1 && n <= lines.length) windows.add(n);
+            }
+          }
+          excerpt = Array.from(windows).sort((a, b) => a - b).map((n) => ({ lineNo: n, text: lines[n - 1]! }));
+        } catch { /* ignore */ }
+      }
+      return {
+        found: true,
+        finding: finding ?? null,
+        rule: rule
+          ? { id: rule.id, category: rule.category, level: rule.level, title: rule.title, reason: rule.reason, suggestedTests: rule.suggestedTests, suggestedFix: rule.suggestedFix, pattern: String(rule.pattern), languages: rule.languages }
+          : null,
+        excerpt,
+      };
     },
   },
 ];

@@ -10,6 +10,8 @@ export interface PatternRule {
   pattern: RegExp;
   /** Optional negative regex — if matches, skip. */
   notPattern?: RegExp;
+  /** If true, matches on lines inside a try/catch block are suppressed. */
+  blockAware?: boolean;
   title: string;
   reason: string;
   suggestedTests?: string[];
@@ -45,6 +47,7 @@ export const ASYNC_RULES: PatternRule[] = [
     category: 'async', level: 'MEDIUM', languages: JS_LIKE,
     pattern: /await\s+(?:fetch|axios|api\.|trpc\.|supabase\.)/,
     notPattern: /try\s*\{|catch\s*\(/,
+    blockAware: true,
     title: 'Awaited network call without visible try/catch',
     reason: 'Network rejections in this hunk are not wrapped — surface errors and loading/error states may leak.',
     suggestedTests: [

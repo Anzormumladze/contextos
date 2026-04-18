@@ -7,7 +7,11 @@ export function analyzeStateRisk(ctx: AnalysisContext): Finding[] {
   const findings: Finding[] = [];
   for (const file of ctx.changedFiles) {
     if (matchAny(file.path, ctx.config.ignoredPaths)) continue;
-    findings.push(...runPatternRules({ file, rules: STATE_RULES }));
+    findings.push(...runPatternRules({
+      file, rules: STATE_RULES,
+      findingsPerRule: ctx.config.limits.findingsPerRule,
+      regexTimeoutMs: ctx.config.limits.regexTimeoutMs,
+    }));
   }
   return findings;
 }
