@@ -1,5 +1,6 @@
 import type { AnalysisContext, Finding } from '../types/index.js';
 import { matchAny } from '../utils/glob.js';
+import { resolveCoverageKey } from '../utils/paths.js';
 
 export interface CoverageAnalysis {
   findings: Finding[];
@@ -49,7 +50,8 @@ export function analyzeCoverage(ctx: AnalysisContext): CoverageAnalysis {
     if (matchAny(file.path, config.ignoredPaths)) continue;
     if (/\.(test|spec)\.(ts|tsx|js|jsx)$/.test(file.path)) continue;
 
-    const cov = coverage.files[file.path];
+    const covKey = resolveCoverageKey(coverage.files, file.path);
+    const cov = covKey ? coverage.files[covKey] : undefined;
     const changedSet = new Set(file.addedLineNumbers);
     const changedCount = changedSet.size;
 

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { resolve, relative } from 'node:path';
+import { resolve, relative, isAbsolute } from 'node:path';
 import type { CoverageReport, CoverageFileSummary } from '../types/index.js';
+import { toPosix } from './paths.js';
 
 const CANDIDATE_PATHS = [
   'coverage/coverage-summary.json',
@@ -27,9 +28,14 @@ function pct(covered: number, total: number): number {
 }
 
 function normalizePath(root: string, p: string): string {
-  const abs = resolve(p);
+  const input = toPosix(p);
+  const abs = isAbsolute(input) ? input : resolve(root, input);
   const rel = relative(root, abs);
-  return rel.replace(/\\/g, '/');
+  // If `rel` walks upward (coverage is under a different root), keep the
+  // posix-normalised absolute path so suffix-match in the coverage engine
+  // can still find it.
+  const result = rel.startsWith('..') ? toPosix(abs) : toPosix(rel);
+  return result;
 }
 
 function parseLcov(text: string, root: string): CoverageReport {

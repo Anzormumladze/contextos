@@ -25,6 +25,21 @@ export interface Finding {
   ruleId?: string;
 }
 
+export interface ScoringBreakdown {
+  findingsSubtotal: number;
+  coverageGapSubtotal: number;
+  changeSizeSubtotal: number;
+  blockedByCategory?: string;
+  maxFindingLevel: RiskLevel;
+  coverageConsidered: boolean;
+}
+
+export interface SkippedFile {
+  path: string;
+  reason: 'binary' | 'too-large' | 'ignored-glob' | 'unreadable' | 'truncated-hunk';
+  detail?: string;
+}
+
 export interface AnalysisResult {
   decision: Decision;
   overallRiskScore: number;
@@ -39,6 +54,11 @@ export interface AnalysisResult {
     filesAnalyzed: number;
     durationMs: number;
     engineVersions: Record<string, string>;
+    scoringBreakdown: ScoringBreakdown;
+    truncated: { findings: boolean; perRuleCap: number; totalCap: number; originalFindingCount: number };
+    skippedFiles: SkippedFile[];
+    cacheHit: boolean;
+    configWarnings: string[];
   };
 }
 

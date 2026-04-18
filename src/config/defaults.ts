@@ -64,5 +64,14 @@ export const DEFAULT_CONFIG: RiskConfig = {
   diff: {
     base: 'HEAD',
     includeUntracked: true,
+    maxTotalBytes: 64 * 1024 * 1024,
+    maxLineBytes: 50 * 1024,
+    maxFileBytes: 5 * 1024 * 1024,
+  },
+  limits: {
+    findingsPerRule: 20,
+    totalFindings: 300,
+    regexTimeoutMs: 250,
+    cacheSize: 32,
   },
 };

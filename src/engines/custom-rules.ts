@@ -4,16 +4,23 @@ import { runPatternRules } from './pattern-runner.js';
 import type { PatternRule } from '../rules/patterns.js';
 
 export function analyzeCustomRules(ctx: AnalysisContext): Finding[] {
-  const rules: PatternRule[] = ctx.config.customRules.map((r) => ({
-    id: `custom/${r.id}`,
-    category: r.category,
-    level: r.level,
-    pattern: new RegExp(r.pattern, r.flags ?? ''),
-    title: r.description,
-    reason: `Custom rule matched: ${r.description}`,
-    suggestedTests: r.suggestedTests,
-    suggestedFix: r.suggestedFix,
-  }));
+  const rules: PatternRule[] = [];
+  for (const r of ctx.config.customRules) {
+    try {
+      rules.push({
+        id: `custom/${r.id}`,
+        category: r.category,
+        level: r.level,
+        pattern: new RegExp(r.pattern, r.flags ?? ''),
+        title: r.description,
+        reason: `Custom rule matched: ${r.description}`,
+        suggestedTests: r.suggestedTests,
+        suggestedFix: r.suggestedFix,
+      });
+    } catch {
+      // Invalid regex already surfaced as a config warning; skip silently.
+    }
+  }
   if (rules.length === 0) return [];
   const findings: Finding[] = [];
   for (const file of ctx.changedFiles) {
@@ -23,7 +30,11 @@ export function analyzeCustomRules(ctx: AnalysisContext): Finding[] {
       return !glob || matchAny(file.path, [glob]);
     });
     if (scoped.length === 0) continue;
-    findings.push(...runPatternRules({ file, rules: scoped }));
+    findings.push(...runPatternRules({
+      file, rules: scoped,
+      findingsPerRule: ctx.config.limits.findingsPerRule,
+      regexTimeoutMs: ctx.config.limits.regexTimeoutMs,
+    }));
   }
   return findings;
 }

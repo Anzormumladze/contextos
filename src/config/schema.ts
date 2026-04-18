@@ -41,6 +41,15 @@ export interface RiskConfig {
   diff: {
     base: string;
     includeUntracked: boolean;
+    maxTotalBytes: number;
+    maxLineBytes: number;
+    maxFileBytes: number;
+  };
+  limits: {
+    findingsPerRule: number;
+    totalFindings: number;
+    regexTimeoutMs: number;
+    cacheSize: number;
   };
 }
 

@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { DEFAULT_CONFIG } from './defaults.js';
 import type { RiskConfig, PartialRiskConfig } from './schema.js';
+import { validateConfig } from './validator.js';
 
 const CONFIG_FILENAMES = ['risk.config.json', '.riskrc.json', '.risk.json'];
 
@@ -36,12 +37,14 @@ export interface LoadedConfig {
   config: RiskConfig;
   configPath: string | null;
   projectRoot: string;
+  warnings: string[];
 }
 
 export function loadConfig(cwd: string = process.cwd(), override?: PartialRiskConfig): LoadedConfig {
   const configPath = findConfigFile(cwd);
   let fileConfig: PartialRiskConfig = {};
   let projectRoot = cwd;
+  const warnings: string[] = [];
   if (configPath) {
     projectRoot = dirname(configPath);
     try {
@@ -49,9 +52,13 @@ export function loadConfig(cwd: string = process.cwd(), override?: PartialRiskCo
     } catch (err) {
       throw new Error(`Failed to parse config at ${configPath}: ${(err as Error).message}`);
     }
+    warnings.push(...validateConfig(fileConfig));
   }
   let config = deepMerge(DEFAULT_CONFIG, fileConfig);
-  if (override) config = deepMerge(config, override);
+  if (override) {
+    warnings.push(...validateConfig(override));
+    config = deepMerge(config, override);
+  }
   if (!config.projectRoot) config.projectRoot = projectRoot;
-  return { config, configPath, projectRoot };
+  return { config, configPath, projectRoot, warnings };
 }

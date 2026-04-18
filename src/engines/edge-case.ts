@@ -1,7 +1,15 @@
 import type { AnalysisContext, ChangedFile, Finding } from '../types/index.js';
 import { EDGE_CASE_RULES } from '../rules/patterns.js';
+import { PYTHON_RULES } from '../rules/patterns-python.js';
+import { GO_RULES } from '../rules/patterns-go.js';
 import { runPatternRules } from './pattern-runner.js';
 import { matchAny } from '../utils/glob.js';
+
+const RULES = [
+  ...EDGE_CASE_RULES,
+  ...PYTHON_RULES.filter((r) => r.category === 'edge-case'),
+  ...GO_RULES.filter((r) => r.category === 'edge-case'),
+];
 
 const CRITICAL_PATH_EXTRA_TESTS: Array<{ match: RegExp; tests: string[] }> = [
   {
@@ -71,7 +79,11 @@ export function analyzeEdgeCases(ctx: AnalysisContext): EdgeCaseAnalysis {
   for (const file of ctx.changedFiles) {
     if (matchAny(file.path, ctx.config.ignoredPaths)) continue;
 
-    const patternFindings = runPatternRules({ file, rules: EDGE_CASE_RULES });
+    const patternFindings = runPatternRules({
+      file, rules: RULES,
+      findingsPerRule: ctx.config.limits.findingsPerRule,
+      regexTimeoutMs: ctx.config.limits.regexTimeoutMs,
+    });
     for (const f of patternFindings) {
       findings.push(f);
       for (const t of f.suggestedTests ?? []) missingSet.add(t);

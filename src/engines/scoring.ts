@@ -1,4 +1,4 @@
-import type { AnalysisContext, Decision, Finding, RiskLevel } from '../types/index.js';
+import type { AnalysisContext, Decision, Finding, RiskLevel, ScoringBreakdown } from '../types/index.js';
 import type { CoverageAnalysis } from './coverage.js';
 import { matchAny } from '../utils/glob.js';
 
@@ -12,13 +12,7 @@ export interface ScoringResult {
   overallRiskScore: number;
   overallRiskLevel: RiskLevel;
   decision: Decision;
-  breakdown: {
-    findingsSubtotal: number;
-    coverageGapSubtotal: number;
-    changeSizeSubtotal: number;
-    blockedByCategory?: string;
-    maxFindingLevel: RiskLevel;
-  };
+  breakdown: ScoringBreakdown;
 }
 
 function levelFromScore(score: number): RiskLevel {
@@ -63,6 +57,15 @@ export function scoreAnalysis(inputs: ScoringInputs): ScoringResult {
       blockedByCategory = `${f.category} (${f.ruleId ?? f.title})`;
     }
   }
+  // Sanity heuristic: if blocking is driven by a category that matches >80% of
+  // all findings, the config is probably over-broad. Surface, don't silence.
+  if (blockedByCategory && findings.length >= 5) {
+    const cat = blockedByCategory.split(' ')[0];
+    const share = findings.filter((f) => f.category === cat).length / findings.length;
+    if (share > 0.8) {
+      blockedByCategory += ` — note: ${Math.round(share * 100)}% of findings are this category; consider narrowing blockedCategories or the triggering rules.`;
+    }
+  }
 
   const hasCoverage = ctx.coverage.source !== 'none' && coverage.changedLineCoverage.total > 0;
   const gap = hasCoverage
@@ -93,6 +96,7 @@ export function scoreAnalysis(inputs: ScoringInputs): ScoringResult {
       changeSizeSubtotal: Math.round(changeSizeSubtotal * 10) / 10,
       blockedByCategory,
       maxFindingLevel,
+      coverageConsidered: hasCoverage,
     },
   };
 }
