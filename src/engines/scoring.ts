@@ -64,7 +64,10 @@ export function scoreAnalysis(inputs: ScoringInputs): ScoringResult {
     }
   }
 
-  const gap = Math.max(0, ctx.config.minimumCoverage.changedLines - coverage.changedLineCoverage.pct);
+  const hasCoverage = ctx.coverage.source !== 'none' && coverage.changedLineCoverage.total > 0;
+  const gap = hasCoverage
+    ? Math.max(0, ctx.config.minimumCoverage.changedLines - coverage.changedLineCoverage.pct)
+    : 0;
   const coverageGapSubtotal = gap * w.coverageGapWeight;
 
   const totalLoc = ctx.changedFiles.reduce((a, f) => a + f.totalAdded + f.totalRemoved, 0);

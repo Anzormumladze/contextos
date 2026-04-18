@@ -33,6 +33,18 @@ export function analyzeCoverage(ctx: AnalysisContext): CoverageAnalysis {
 
   const noCoverage = coverage.source === 'none';
 
+  if (noCoverage && changedFiles.length > 0) {
+    findings.push({
+      file: '(project)',
+      category: 'coverage',
+      level: 'LOW',
+      title: 'No coverage report found — changed-line coverage not evaluated',
+      reason: 'Looked for coverage-summary.json, coverage-final.json, or lcov.info and found none. Risk score ignores coverage-gap; add a coverage report for a stricter gate.',
+      suggestedTests: ['Run your test suite with coverage enabled (e.g. `jest --coverage` / `vitest --coverage`).'],
+      ruleId: 'coverage/report-missing',
+    });
+  }
+
   for (const file of changedFiles) {
     if (matchAny(file.path, config.ignoredPaths)) continue;
     if (/\.(test|spec)\.(ts|tsx|js|jsx)$/.test(file.path)) continue;
